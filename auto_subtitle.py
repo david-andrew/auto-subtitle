@@ -191,10 +191,6 @@ def translate_subtitles(subtitle_file:Path):
             # save translations
             translations.extend(result.split('\n\n'))
 
-
-        # pdb.set_trace()
-
-
     # separate components of each frame for the original and translated subtitles
     idxs, timestamps, subtitles = zip_longest(*[frame.split("\n", 2) for frame in frames])
     llm_idxs, llm_timestamps, translations = zip_longest(*[frame.split("\n", 2) for frame in translations])
@@ -222,6 +218,9 @@ def translate_subtitles(subtitle_file:Path):
         out_chunks.append(f"{idx}\n{timestamp}\n{translation}")
     out_text = "\n\n".join(out_chunks)
     subtitle_file.write_text(out_text)
+
+    #save the translation to the database
+    translation_db.insert(text, out_text)
 
 
 
