@@ -6,12 +6,20 @@ from pathlib import Path
 import shutil
 from archytas.agent import Message, Agent as ArchyAgent, Role
 from typing import Generator
+from bidict import bidict
 import openai
+
+from crossfiledialog import open_file, open_multiple
 
 import pdb
 
+from db import TranslationDB
 
-language_codes = {
+
+translation_db = TranslationDB()
+
+
+language_codes = bidict({
     "English": "en",
     "Chinese": "zh",
     "Chinese (Simplified)": "zh-CN",
@@ -25,35 +33,58 @@ language_codes = {
     "Russian": "ru",
     "Spanish": "es",
     "Turkish": "tr",
-}
+})
 
 language = "Chinese (Simplified)"
 language_code = language_codes[language]
 
-def main(indir:Path, outdir:Path):
+
+
+def main(file:Path|None, language:str):
+    #have the user select the video(s) to process
+    if file is None:
+        prev_file = Path('_prev_file.txt')
+        if prev_file.exists():
+           start_dir = Path(prev_file.read_text()).parent
+        else:
+            start_dir = Path.cwd()
+        file = Path(open_file('Select Video File', start_dir=str(start_dir), filter='*.mkv'))
+        assert file.exists(), "No video file selected."
+        prev_file.write_text(str(file))
+    
     #create a temp directory
     tmpfile = Path.cwd()/'temp'/"temp.mkv"
     if not tmpfile.parent.exists():
         tmpfile.parent.mkdir()
     
-    for file in tqdm(sorted(indir.glob(f"*.mkv")), desc="Adding translations"):
-        #copy the file to a temp directory
-        shutil.copy(file, tmpfile)
+    #copy the file to a temp directory
+    shutil.copy(file, tmpfile)
 
-        extract_subtitles_from_mkv(tmpfile)
-        for subtitle_file in tmpfile.parent.glob(f"*.srt"):
-            translate_subtitles(subtitle_file)
+    # pull subtitles as files into the temp directory
+    extract_subtitles_from_mkv(tmpfile)
 
-        #merge subtitles back into the mkv
-        merge_subtitles_into_mkv(tmpfile)
+    #have the user select the subtitle file(s) to translate
+    subtitle_files = open_multiple('Select Subtitle(s) to Translate', start_dir=str(tmpfile.parent), filter='*.srt')
+    assert len(subtitle_files) > 0, "No subtitle files selected."
+    subtitle_files = [Path(f) for f in subtitle_files]
 
-        #move the file back to the original directory
-        pdb.set_trace()
-        # shutil.move(tmpfile, outdir/file.name)
-
-        #delete the temp directory contents
-        for f in tmpfile.parent.glob('*'):
+    # delete all .srt files that were not selected
+    for f in tmpfile.parent.glob('*.srt'):
+        if f not in subtitle_files:
             f.unlink()
+
+    # translate the subtitle files and merge subtitles back into the mkv
+    for subtitle_file in subtitle_files:
+        translate_subtitles(subtitle_file)
+    merge_subtitles_into_mkv(tmpfile)
+
+    #move the file to the output directory
+    shutil.move(tmpfile, Path('output')/file.name)
+    print(f"Finished processing output/{file.name}")
+
+    #delete the temp directory contents
+    for f in tmpfile.parent.glob('*'):
+        f.unlink()
 
 def merge_subtitles_into_mkv(file:Path):
     # get the new subtitle files for the language
@@ -107,10 +138,18 @@ def is_english(text:str):
 def translate_subtitles(subtitle_file:Path):
     text = subtitle_file.read_text()
 
-    # remove the BOM if it is present
+    # remove the BOM if it is present, and remove empty frames
     if text.startswith('\ufeff'):
         text = text[1:]
+    text = '\n\n'.join([frame for frame in text.split('\n\n') if frame.strip() != ''])
     
+
+    #check if the text is already in the database of translations
+    if (translation := translation_db.retrieve(text)) is not None:
+        print(f"Skipping {subtitle_file.name} because it is already translated.")
+        subtitle_file.write_text(translation)
+        return
+
     # if not is_english(text):
     #     print(f"Skipping {subtitle_file} because it is not in English.")
     #     return
@@ -119,13 +158,12 @@ def translate_subtitles(subtitle_file:Path):
 
     #split the text into translation units
     frames = text.split("\n\n")
-    frames = [frame for frame in frames if frame.strip() != '']
     translations = []
     window_size = 20
 
     batch_idxs = [*batched(range(len(frames)), window_size)]
 
-    with tqdm(total=text.count('\n'), desc=f'translating {subtitle_file.name}', leave=False) as pbar:
+    with tqdm(total=text.count('\n'), desc=f'translating {subtitle_file.name}', leave=False) as pbar, open('log.txt', 'w') as log:
         for prev_window, window in zip([[], *batch_idxs], batch_idxs):
             
             #get the current subtitles window and translated previous window (if any)
@@ -144,6 +182,7 @@ def translate_subtitles(subtitle_file:Path):
             tokens = []
             for token in result_gen:
                 # print(token, end='', flush=True)
+                log.write(token)
                 tokens.append(token)
                 if (newlines := token.count('\n')) > 0:        
                     pbar.update(newlines)
@@ -161,6 +200,7 @@ def translate_subtitles(subtitle_file:Path):
     llm_idxs, llm_timestamps, translations = zip_longest(*[frame.split("\n", 2) for frame in translations])
 
     #check if the llm idxs and timestamps match the original idxs and timestamps
+    #TODO: draw these with colored diffs
     if idxs != llm_idxs:
         print(f"The LLM idxs do not match the original idxs.")
         for i, (idx, llm_idx) in enumerate(zip(idxs, llm_idxs)):
@@ -214,7 +254,7 @@ class Agent:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extract subtitles from MKV files in a specified directory.")
-    parser.add_argument("--indir", '-i', help="Path to the directory containing .mkv files", required=True)
-    parser.add_argument("--outdir", '-o', help="Path to the directory where the processed .mkv files will be saved", default='output')
+    parser.add_argument("--file", '-f', help="Path to the .mkv file to add a translation", default=None)
+    parser.add_argument("--language", '-l', help="Language code of language to translate to", default="zh-CN")
     args = parser.parse_args()
-    main(Path(args.indir), Path(args.outdir))
+    main(args.file and Path(args.file), args.language)
