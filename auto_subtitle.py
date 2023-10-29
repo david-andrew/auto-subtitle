@@ -163,7 +163,7 @@ def translate_subtitles(subtitle_file:Path):
 
     batch_idxs = [*batched(range(len(frames)), window_size)]
 
-    with tqdm(total=text.count('\n'), desc=f'translating {subtitle_file.name}', leave=False) as pbar, open('log.txt', 'w') as log:
+    with tqdm(total=text.count('\n'), desc=f'translating {subtitle_file.name}', leave=False) as pbar, open('llm_log.txt', 'w') as log:
         for prev_window, window in zip([[], *batch_idxs], batch_idxs):
             
             #get the current subtitles window and translated previous window (if any)

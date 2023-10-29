@@ -5,3 +5,18 @@
 
 # temp folder
 temp/
+
+# output folder
+output/
+
+# file picker prev folder
+_prev_file.txt
+
+# llm in progress output file
+llm_log.txt
+
+# database files
+*.db
+
+# python cache
+__pycache__/
