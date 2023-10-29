@@ -38,6 +38,7 @@ language_codes = bidict({
 language = "Chinese (Simplified)"
 language_code = language_codes[language]
 
+model = 'gpt-4'
 
 
 def main(file:Path|None, language:str):
@@ -154,7 +155,7 @@ def translate_subtitles(subtitle_file:Path):
     #     print(f"Skipping {subtitle_file} because it is not in English.")
     #     return
 
-    translator = Agent(model='gpt-4')#, spinner=None)
+    translator = Agent(model=model)#, spinner=None)
 
     #split the text into translation units
     frames = text.split("\n\n")
@@ -181,8 +182,7 @@ def translate_subtitles(subtitle_file:Path):
             result_gen = translator.oneshot_streaming(prompt=prompt, query=query)
             tokens = []
             for token in result_gen:
-                # print(token, end='', flush=True)
-                log.write(token)
+                log.write(token); log.flush()
                 tokens.append(token)
                 if (newlines := token.count('\n')) > 0:        
                     pbar.update(newlines)
@@ -235,7 +235,7 @@ class Agent:
 
     def oneshot_streaming(self, prompt:str, query:str) -> Generator[str, None, None]:
         gen = openai.ChatCompletion.create(
-            model='gpt-4',
+            model=self.model,
             messages=[
                 Message(role=Role.system, content=prompt),
                 Message(role=Role.user, content=query)
