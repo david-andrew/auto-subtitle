@@ -164,7 +164,38 @@ def translate_subtitles(subtitle_file:Path):
 
     batch_idxs = [*batched(range(len(frames)), window_size)]
 
-    with tqdm(total=text.count('\n'), desc=f'translating {subtitle_file.name}', leave=False) as pbar, open('llm_log.txt', 'w') as log:
+    # check for any partial translations to restart the process with
+    if Path('llm_log.txt').exists():
+        log_text = Path('llm_log.txt').read_text()                                      # read the log
+        partial = log_text.split('\n\n')[:-1]                                           # split into frames (truncate the last frame since it may be incomplete)
+        llm_idxs, llm_timestamps, llm_subtitles = [*zip_longest(*[frame.split("\n", 2) for frame in partial])]   # separate components of each frame
+        assert all(None not in f for f in zip(llm_idxs, llm_timestamps, llm_subtitles)), "Error with the saved translation. Some frames are missing pieces. Please check llm_log.txt."
+        assert all(matches:=[int(l)==i for l,i in zip(llm_idxs, range(1,len(llm_idxs)+1))]), f"Error with the saved idxs ({[*enumerate(matches)]}). Please check llm_log.txt."
+
+        #compare the timestamps to the original timestamps to see if the translation is a match
+        _, timestamps, _ = zip_longest(*[frame.split("\n", 2) for frame in frames])
+
+        matches = [l == t for l,t in zip(llm_timestamps, timestamps)]
+        match_score = sum(matches)/len(matches)
+        choice = 'y'
+        if match_score < 0.9:
+            print(f"Warning: the translation file in progress does not match the original subtitle file very well. Match score: {match_score}")
+            choice = input("Would you like to use the saved translation anyway? (y/n)")
+
+        if choice == 'y':
+            print('Starting from previous partial translation')
+            translations = partial
+            batch_idxs = [*batched(range(len(translations), len(frames)), window_size)]
+            Path('llm_log.txt').write_text('\n\n'.join(translations) + '\n\n')
+        else:
+            print('Ignoring previous partial translation')
+
+    with tqdm(total=text.count('\n'), desc=f'translating {subtitle_file.name}', leave=False, mininterval=0) as pbar, open('llm_log.txt', 'w' if len(translations) == 0 else 'a') as log:
+        
+        #if restarting an in-progress translation, set the initial progress bar position
+        if len(translations) > 0: pbar.update('\n\n'.join(translations).count('\n'))
+        
+        #iterate through the translation windows
         for prev_window, window in zip([[], *batch_idxs], batch_idxs):
             
             #get the current subtitles window and translated previous window (if any)
@@ -186,6 +217,7 @@ def translate_subtitles(subtitle_file:Path):
                 tokens.append(token)
                 if (newlines := token.count('\n')) > 0:        
                     pbar.update(newlines)
+            log.write('\n\n'); log.flush()
             result = ''.join(tokens)
 
             # save translations
