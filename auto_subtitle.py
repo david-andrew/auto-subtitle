@@ -190,7 +190,7 @@ def translate_subtitles(subtitle_file:Path):
         else:
             print('Ignoring previous partial translation')
 
-    with tqdm(total=text.count('\n'), desc=f'translating {subtitle_file.name}', leave=False, mininterval=0) as pbar, open('llm_log.txt', 'w' if len(translations) == 0 else 'a') as log:
+    with tqdm(total=text.count('\n'), desc=f'translating {subtitle_file.name}', leave=False, miniters=1) as pbar, open('llm_log.txt', 'w' if len(translations) == 0 else 'a') as log:
         
         #if restarting an in-progress translation, set the initial progress bar position
         if len(translations) > 0: pbar.update('\n\n'.join(translations).count('\n'))
