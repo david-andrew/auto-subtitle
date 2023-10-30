@@ -21,7 +21,7 @@ translation_db = TranslationDB()
 
 language_codes = bidict({
     "English": "en",
-    "Chinese": "zh",
+    # "Chinese": "zh",
     "Chinese (Simplified)": "zh-CN",
     "Chinese (Traditional)": "zh-TW",
     "French": "fr",
@@ -35,13 +35,19 @@ language_codes = bidict({
     "Turkish": "tr",
 })
 
-language = "Chinese (Simplified)"
-language_code = language_codes[language]
 
 model = 'gpt-4'
 
 
-def main(file:Path|None, language:str):
+def main(file:Path|None, language:str|None):
+    if language is None:
+        language = select_option_via_file_dialog("Select a Language", list(language_codes.keys()))
+        if language is None:
+            raise Exception("Error: No language selected.")
+        # pdb.set_trace()
+    
+    language_code = language_codes[language]
+
     #have the user select the video(s) to process
     if file is None:
         prev_file = Path('_prev_file.txt')
@@ -49,7 +55,7 @@ def main(file:Path|None, language:str):
            start_dir = Path(prev_file.read_text()).parent
         else:
             start_dir = Path.cwd()
-        file = Path(open_file('Select Video File', start_dir=str(start_dir), filter='*.mkv'))
+        file = Path(open_file('Select Video File', start_dir=str(start_dir.absolute()), filter='*.mkv'))
         assert file.exists(), "No video file selected."
         prev_file.write_text(str(file))
     
@@ -76,8 +82,8 @@ def main(file:Path|None, language:str):
 
     # translate the subtitle files and merge subtitles back into the mkv
     for subtitle_file in subtitle_files:
-        translate_subtitles(subtitle_file)
-    merge_subtitles_into_mkv(tmpfile)
+        translate_subtitles(subtitle_file, language)
+    merge_subtitles_into_mkv(tmpfile, language_code)
 
     #move the file to the output directory
     shutil.move(tmpfile, Path('output')/file.name)
@@ -87,7 +93,36 @@ def main(file:Path|None, language:str):
     for f in tmpfile.parent.glob('*'):
         f.unlink()
 
-def merge_subtitles_into_mkv(file:Path):
+
+def select_option_via_file_dialog(title:str, options: list[str]) -> str|None:
+    # Create a temporary directory
+    temp_path = Path('temp') / 'languages'
+    if not temp_path.exists():
+        temp_path.mkdir(parents=True)
+        
+    # Create empty files for each option in the temp directory
+    for option in options:
+        (temp_path / f"{option}").touch()
+    
+    # Display the open_file dialog
+    selection_path = open_file(title, start_dir=str(temp_path.absolute()))
+    
+    # If the user cancels the file dialog, selection_path will be None.
+    if not selection_path:
+        return None
+
+    # Extract the selected option from the path
+    selected_option = Path(selection_path).stem
+
+    # delete the temp directory contents
+    for f in temp_path.glob('*'):
+        f.unlink()
+    
+    # Return the selected option
+    return selected_option
+
+
+def merge_subtitles_into_mkv(file:Path, language_code:str):
     # get the new subtitle files for the language
     new_subtitle_files = file.parent.glob(f"*.srt")
 
@@ -136,7 +171,7 @@ def is_english(text:str):
 
 
 #TODO: need to cache results to disk as they come in
-def translate_subtitles(subtitle_file:Path):
+def translate_subtitles(subtitle_file:Path, language:str):
     text = subtitle_file.read_text()
 
     # remove the BOM if it is present, and remove empty frames
@@ -177,10 +212,15 @@ def translate_subtitles(subtitle_file:Path):
 
         matches = [l == t for l,t in zip(llm_timestamps, timestamps)]
         match_score = sum(matches)/len(matches)
-        choice = 'y'
-        if match_score < 0.9:
+        if match_score < 0.25:
+            print(f'Detected a low match score ({match_score}). Deleting the saved translation and starting over.')
+            choice = 'n'
+        elif match_score < 0.9:
             print(f"Warning: the translation file in progress does not match the original subtitle file very well. Match score: {match_score}")
             choice = input("Would you like to use the saved translation anyway? (y/n)")
+        else:
+            # use previous in-progress translation
+            choice = 'y'
 
         if choice == 'y':
             print('Starting from previous partial translation')
@@ -286,6 +326,6 @@ class Agent:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extract subtitles from MKV files in a specified directory.")
     parser.add_argument("--file", '-f', help="Path to the .mkv file to add a translation", default=None)
-    parser.add_argument("--language", '-l', help="Language code of language to translate to", default="zh-CN")
+    parser.add_argument("--language", '-l', help="Language code of language to translate to", default=None)
     args = parser.parse_args()
     main(args.file and Path(args.file), args.language)
