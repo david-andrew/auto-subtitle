@@ -4,6 +4,7 @@ from itertools import zip_longest, batched
 from tqdm import tqdm
 from pathlib import Path
 import shutil
+from datetime import datetime, timedelta
 from crossfiledialog import open_file, open_multiple
 
 
@@ -12,10 +13,11 @@ from agent import Agent
 
 import pdb
 
-translation_db = TranslationDB()
+
+#TODO: convert this all to a class
 
 
-language_codes = {
+language_to_codes = {
     "English": "en",
     "Chinese (Simplified)": "zh-CN",
     "Chinese (Traditional)": "zh-TW",
@@ -29,22 +31,23 @@ language_codes = {
     "Spanish": "es",
     "Turkish": "tr",
 }
+code_to_languages = {v:k for k,v in language_to_codes.items()}
 
 
 model = 'gpt-4'
 translator = Agent(model=model)
+translation_db = TranslationDB()
 
 
-def main(file:Path|None, language:str|None):
+def main(file:Path|None, language:str|None, timeshift:float|None):
+    # have the user select a language
     if language is None:
-        language = select_option_via_file_dialog("Select a Language", list(language_codes.keys()))
+        language = select_option_via_file_dialog("Select a Language", list(language_to_codes.keys()))
         if language is None:
             raise Exception("Error: No language selected.")
-        # pdb.set_trace()
-    
-    language_code = language_codes[language]
+    language_code = language_to_codes[language]
 
-    #have the user select the video(s) to process
+    #have the user select the video to process
     if file is None:
         prev_file = Path('_prev_file.txt')
         if prev_file.exists():
@@ -79,6 +82,8 @@ def main(file:Path|None, language:str|None):
     # translate the subtitle files and merge subtitles back into the mkv
     for subtitle_file in subtitle_files:
         translate_subtitles(subtitle_file, language, translator)
+        if timeshift is not None:
+            timeshift_subtitles(subtitle_file, timeshift)
     merge_subtitles_into_mkv(tmpfile, language_code)
 
     #move the file to the output directory
@@ -92,6 +97,13 @@ def main(file:Path|None, language:str|None):
 
 
 def select_option_via_file_dialog(title:str, options: list[str]) -> str|None:
+    """
+    Dumb way to have cross platform dropdown menu: use file dialog to select an option.
+
+    Args:
+        title (str): The title of the dropdown menu.
+        options (list[str]): The options to display in the dropdown menu.
+    """
     # Create a temporary directory
     temp_path = Path('temp') / 'languages'
     if not temp_path.exists():
@@ -119,7 +131,48 @@ def select_option_via_file_dialog(title:str, options: list[str]) -> str|None:
     return selected_option
 
 
+def timeshift_subtitles(file:Path, timeshift:float):
+    """
+    Shift the timestamps of all subtitles by the specified amount.
+
+    Args:
+        file (Path): The .srt file to shift the timestamps of.
+        timeshift (float): The amount of time to shift the subtitles by. Positive to delay, negative to make earlier.
+    """
+    print(f"Shifting timestamps of {file.name} by {timeshift} seconds.")
+    text = file.read_text()
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        if "-->" in line:
+            start, end = line.split("-->")
+            start = shift_timestamp(start, timeshift)
+            end = shift_timestamp(end, timeshift)
+            lines[i] = f"{start} --> {end}"
+    file.write_text("\n".join(lines))
+
+def shift_timestamp(timestamp:str, timeshift:float) -> str:
+    """
+    Shift a timestamp by the specified amount.
+
+    Args:
+        timestamp (str): The timestamp to shift.
+        timeshift (float): The amount of time to shift the timestamp by. Positive to delay, negative to make earlier.
+    
+    Returns:
+        str: The shifted timestamp.
+    """
+    t = datetime.strptime(timestamp.strip(), "%H:%M:%S,%f")
+    t += timedelta(seconds=timeshift)
+    return t.strftime("%H:%M:%S,%f")[:-3]
+
 def merge_subtitles_into_mkv(file:Path, language_code:str):
+    """
+    Add the translated subtitles back into the mkv file.
+
+    Args:
+        file (Path): The .mkv file to merge the subtitles into. All .srt files in the same directory will be merged in.
+        language_code (str): The language code of the subtitles to merge.
+    """
     # get the new subtitle files for the language
     new_subtitle_files = file.parent.glob(f"*.srt")
 
@@ -138,6 +191,12 @@ def merge_subtitles_into_mkv(file:Path, language_code:str):
 
 
 def extract_subtitles_from_mkv(file:Path):
+    """
+    Extract all subtitles from an mkv file into separate .srt files.
+
+    Args:
+        file (Path): The .mkv file to extract the subtitles from.
+    """
     # determine which tracks are subtitles
     output = subprocess.check_output(["mkvmerge", "-i", str(file)], universal_newlines=True)
     lines = output.split("\n")
@@ -157,6 +216,20 @@ def extract_subtitles_from_mkv(file:Path):
 
 #TODO: need to cache results to disk as they come in
 def translate_subtitles(subtitle_file:Path, language:str, translator:Agent):
+    """
+    Use the LLM to translate the subtitles in a .srt file to the specified language.
+
+    Args:
+        subtitle_file (Path): The .srt file to translate (will be overwritten with the translated subtitles)
+        language (str): The language to translate to.
+        translator (Agent): The LLM agent to use for translation.
+    
+    Notes:
+        Translation progress is copied to `llm_log.txt` as it comes in
+        Translations can be restarted based on the contents of `llm_log.txt`
+        Completed translations are cached in the sqlite file `translations.db`
+        Progress bar measures newlines the llm produces, which **should** match the original number in the subtitle file
+    """
     text = subtitle_file.read_text()
 
     # remove the BOM if it is present, and remove empty frames
@@ -287,5 +360,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extract subtitles from MKV files in a specified directory.")
     parser.add_argument("--file", '-f', help="Path to the .mkv file to add a translation", default=None)
     parser.add_argument("--language", '-l', help="Language code of language to translate to", default=None)
+    parser.add_argument("--timeshift", '-t', help="Time shift in seconds to apply to the subtitles", default=None, type=float)
     args = parser.parse_args()
-    main(args.file and Path(args.file), args.language)
+
+    #if user specified a language code, convert it to a language name
+    if args.language is not None and args.language in code_to_languages:
+        args.language = code_to_languages[args.language]
+    
+    main(args.file and Path(args.file), args.language, args.timeshift)
