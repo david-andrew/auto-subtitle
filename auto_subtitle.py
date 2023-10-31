@@ -4,24 +4,19 @@ from itertools import zip_longest, batched
 from tqdm import tqdm
 from pathlib import Path
 import shutil
-from archytas.agent import Message, Agent as ArchyAgent, Role
-from typing import Generator
-from bidict import bidict
-import openai
-
 from crossfiledialog import open_file, open_multiple
 
-import pdb
 
 from db import TranslationDB
+from agent import Agent
 
+import pdb
 
 translation_db = TranslationDB()
 
 
-language_codes = bidict({
+language_codes = {
     "English": "en",
-    # "Chinese": "zh",
     "Chinese (Simplified)": "zh-CN",
     "Chinese (Traditional)": "zh-TW",
     "French": "fr",
@@ -33,10 +28,11 @@ language_codes = bidict({
     "Russian": "ru",
     "Spanish": "es",
     "Turkish": "tr",
-})
+}
 
 
 model = 'gpt-4'
+translator = Agent(model=model)
 
 
 def main(file:Path|None, language:str|None):
@@ -82,7 +78,7 @@ def main(file:Path|None, language:str|None):
 
     # translate the subtitle files and merge subtitles back into the mkv
     for subtitle_file in subtitle_files:
-        translate_subtitles(subtitle_file, language)
+        translate_subtitles(subtitle_file, language, translator)
     merge_subtitles_into_mkv(tmpfile, language_code)
 
     #move the file to the output directory
@@ -90,8 +86,9 @@ def main(file:Path|None, language:str|None):
     print(f"Finished processing output/{file.name}")
 
     #delete the temp directory contents
-    for f in tmpfile.parent.glob('*'):
-        f.unlink()
+    for f in tmpfile.parent.glob('**/*'):
+        if f.is_file():
+            f.unlink()
 
 
 def select_option_via_file_dialog(title:str, options: list[str]) -> str|None:
@@ -156,22 +153,10 @@ def extract_subtitles_from_mkv(file:Path):
                 raise Exception(f"Failed to extract subtitles from {file}.\nStdout: {result.stdout}.\nStderr: {result.stderr}")
             
 
-def is_english(text:str):
-    agent35 = Agent(model='gpt-3.5-turbo')#, spinner=None)
-    if len(text) > 1000:
-        text = text[:1000] + '...\n<rest of text truncated>'
-    result = agent35.oneshot_sync(prompt='You are a helpful assistant', query=f'Here is a .srt file:\n{text}\nAre these subtitles English? Please answer "yes" or "no" without any other comments.')
-    result = result.lower()
-    if 'yes' in result and 'no' not in result:
-        return True
-    elif 'no' in result and 'yes' not in result:
-        return False
-    else:
-        raise Exception(f'GPT-3.5 returned an unexpected response: "{result}"')
 
 
 #TODO: need to cache results to disk as they come in
-def translate_subtitles(subtitle_file:Path, language:str):
+def translate_subtitles(subtitle_file:Path, language:str, translator:Agent):
     text = subtitle_file.read_text()
 
     # remove the BOM if it is present, and remove empty frames
@@ -190,7 +175,6 @@ def translate_subtitles(subtitle_file:Path, language:str):
     #     print(f"Skipping {subtitle_file} because it is not in English.")
     #     return
 
-    translator = Agent(model=model)#, spinner=None)
 
     #split the text into translation units
     frames = text.split("\n\n")
@@ -273,13 +257,13 @@ def translate_subtitles(subtitle_file:Path, language:str):
         print(f"The LLM idxs do not match the original idxs.")
         for i, (idx, llm_idx) in enumerate(zip(idxs, llm_idxs)):
             if idx != llm_idx:
-                print(f"idx {i} does not match: {idx} != {llm_idx}")
+                print(f"idx {i} does not match: '{idx}' != '{llm_idx}'")
         input("Press enter to continue.")
     if timestamps != llm_timestamps:
         print(f"The LLM timestamps do not match the original timestamps.")
         for i, (timestamp, llm_timestamp) in enumerate(zip(timestamps, llm_timestamps)):
             if timestamp != llm_timestamp:
-                print(f"timestamp {i} does not match: {timestamp} != {llm_timestamp}")
+                print(f"timestamp {i} does not match: '{timestamp}' != '{llm_timestamp}'")
         input("Press enter to continue.")
 
     #merge the translations back into the subtitle file
@@ -294,30 +278,6 @@ def translate_subtitles(subtitle_file:Path, language:str):
     #save the translation to the database
     translation_db.insert(text, out_text)
 
-
-
-class Agent:
-    def __init__(self, model:str):
-        self.model = model
-        self.agent = ArchyAgent(model=model)
-
-    def oneshot_sync(self, prompt:str, query:str) -> str:
-        return self.agent.oneshot_sync(prompt=prompt, query=query)
-
-    def oneshot_streaming(self, prompt:str, query:str) -> Generator[str, None, None]:
-        gen = openai.ChatCompletion.create(
-            model=self.model,
-            messages=[
-                Message(role=Role.system, content=prompt),
-                Message(role=Role.user, content=query)
-            ],
-            stream=True
-        )
-        for chunk in gen:
-            try:
-                yield chunk["choices"][0]["delta"]['content']
-            except:
-                pass
 
 
 
